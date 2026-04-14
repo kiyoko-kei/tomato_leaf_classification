@@ -6,15 +6,25 @@ from PIL import Image
 from skimage.feature import graycomatrix, graycoprops, local_binary_pattern, hog
 from skimage.measure import label, regionprops
 from scipy.stats import skew, kurtosis
+import traceback
 
-#load model and processors 
-model    = joblib.load('rf_model.pkl')
-scaler   = joblib.load('scaler.pkl')
-selector = joblib.load('selector.pkl')
+# Load model and processors
+try:
+    model    = joblib.load('rf_model.pkl')
+    scaler   = joblib.load('scaler.pkl')
+    selector = joblib.load('selector.pkl')
+    
+    # Debug: Print expected feature dimensions
+    st.sidebar.write("Debug Info:")
+    st.sidebar.write(f"Expected features after scaling: {scaler.n_features_in_}")
+    st.sidebar.write(f"Expected features after selection: {selector.n_features_in_}")
+except Exception as e:
+    st.error(f"Error loading model files: {str(e)}")
+    st.stop()
 
 FIXED_SIZE = (256, 256)
 
-#helper functions
+# Helper functions
 def safe_stat(func, arr, default=0.0):
     arr = np.asarray(arr).astype(np.float32).ravel()
     if arr.size == 0:
@@ -26,7 +36,6 @@ def safe_stat(func, arr, default=0.0):
         return float(val)
     except:
         return float(default)
-
 
 def create_green_leaf_mask(img_rgb):
     img_hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
@@ -44,7 +53,6 @@ def create_green_leaf_mask(img_rgb):
         mask = np.where(labels == largest_idx, 255, 0).astype(np.uint8)
 
     return mask
-
 
 def create_lesion_mask(img_rgb):
     hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
@@ -65,7 +73,7 @@ def create_lesion_mask(img_rgb):
 
     return lesion
 
-#feature extraction functions
+# Feature extraction functions
 def extract_color_features(img_rgb, img_gray, img_hsv, img_lab):
     feats = {}
 
@@ -105,11 +113,13 @@ def extract_color_features(img_rgb, img_gray, img_hsv, img_lab):
 
     return feats
 
-
 def extract_glcm_features(img_rgb, img_gray, img_hsv, img_lab):
     feats = {}
+    # Ensure gray image is in correct format (uint8)
+    img_gray_uint8 = img_gray.astype(np.uint8)
+    
     glcm = graycomatrix(
-        img_gray,
+        img_gray_uint8,
         distances=[1, 2],
         angles=[0, np.pi/4, np.pi/2, 3*np.pi/4],
         levels=256,
@@ -125,10 +135,10 @@ def extract_glcm_features(img_rgb, img_gray, img_hsv, img_lab):
 
     return feats
 
-
 def extract_lbp_features(img_rgb, img_gray, img_hsv, img_lab, radius=1, n_points=8):
     feats = {}
-    lbp = local_binary_pattern(img_gray, n_points, radius, method='uniform')
+    img_gray_uint8 = img_gray.astype(np.uint8)
+    lbp = local_binary_pattern(img_gray_uint8, n_points, radius, method='uniform')
     n_bins = int(lbp.max() + 1)
 
     hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins), density=True)
@@ -139,7 +149,6 @@ def extract_lbp_features(img_rgb, img_gray, img_hsv, img_lab, radius=1, n_points
     feats['lbp_std']  = float(np.std(lbp))
 
     return feats
-
 
 def extract_shape_features(img_rgb, img_gray, img_hsv, img_lab):
     feats = {}
@@ -176,14 +185,16 @@ def extract_shape_features(img_rgb, img_gray, img_hsv, img_lab):
 
     return feats
 
-
 def extract_hog_features(img_rgb, img_gray, img_hsv, img_lab):
     feats = {}
-
+    
+    # Resize to a consistent size for HOG to ensure fixed feature vector length
+    hog_img = cv2.resize(img_gray, (128, 128))
+    
     hog_vec = hog(
-        img_gray,
+        hog_img,
         orientations=9,
-        pixels_per_cell=(32, 32),
+        pixels_per_cell=(16, 16),
         cells_per_block=(2, 2),
         block_norm='L2-Hys',
         feature_vector=True
@@ -200,7 +211,6 @@ def extract_hog_features(img_rgb, img_gray, img_hsv, img_lab):
     feats['grad_std']  = float(np.std(grad_mag))
 
     return feats
-
 
 def extract_lesion_features(img_rgb, img_gray, img_hsv, img_lab):
     feats = {}
@@ -232,8 +242,7 @@ def extract_lesion_features(img_rgb, img_gray, img_hsv, img_lab):
 
     return feats
 
-
-#combined feature extractor
+# Combined feature extractor with debugging
 def extract_all_features(img_rgb):
     img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     img_hsv  = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
@@ -246,7 +255,13 @@ def extract_all_features(img_rgb):
     feats.update(extract_shape_features(img_rgb, img_gray, img_hsv, img_lab))
     feats.update(extract_hog_features(img_rgb, img_gray, img_hsv, img_lab))
     feats.update(extract_lesion_features(img_rgb, img_gray, img_hsv, img_lab))
-    return list(feats.values())
+    
+    feature_values = list(feats.values())
+    
+    # Print number of features extracted
+    st.sidebar.write(f"Features extracted: {len(feature_values)}")
+    
+    return feature_values
 
 st.set_page_config(page_title="Tomato Leaf Classifier", page_icon="🍅", layout="centered")
 
@@ -273,33 +288,55 @@ if img is not None:
     img_np = np.array(img)
     img_np = cv2.resize(img_np, FIXED_SIZE)
 
-    with st.spinner("Analyzing leaf..."):
-        features          = extract_all_features(img_np)
-        features_scaled   = scaler.transform([features])
-        features_selected = selector.transform(features_scaled)
-        prediction        = model.predict(features_selected)[0]
-        proba             = model.predict_proba(features_selected)[0]
-
-    label_map = {
-        # string labels
-        'Tomato___Bacterial_spot': ('bacterial_spot', 'Bacterial Spot Detected on Tomato Leaf'),
-        'Tomato___healthy':        ('healthy',        'Tomato Leaf is Healthy'),
-        # numeric labels (0 = bacterial spot, 1 = healthy)
-        0: ('bacterial_spot', 'Bacterial Spot Detected on Tomato Leaf'),
-        1: ('healthy',        'Tomato Leaf is Healthy'),
-    }
-
-    confidence = max(proba) * 100
-
-    result_type, result_label = label_map.get(prediction, ('unknown', f'Unknown Result: {prediction}'))
-
-    st.subheader("Result:")
-    if result_type == 'healthy':
-        st.success(result_label)
-    elif result_type == 'bacterial_spot':
-        st.error(result_label)
-    else:
-        st.warning(result_label)
-
-    st.write(f"Confidence: **{confidence:.1f}%**")
-    st.progress(int(confidence))
+    with st.spinner("🔬 Analyzing leaf..."):
+        try:
+            features = extract_all_features(img_np)
+            
+            # Convert to numpy array and ensure correct shape
+            features_array = np.array(features).reshape(1, -1)
+            
+            # Debug information
+            st.sidebar.write(f"Feature array shape: {features_array.shape}")
+            st.sidebar.write(f"Expected features (scaler): {scaler.n_features_in_}")
+            
+            # Check if feature count matches
+            if features_array.shape[1] != scaler.n_features_in_:
+                st.error(f"Feature dimension mismatch! Expected {scaler.n_features_in_} features but got {features_array.shape[1]}")
+                st.stop()
+            
+            features_scaled = scaler.transform(features_array)
+            features_selected = selector.transform(features_scaled)
+            
+            prediction = model.predict(features_selected)[0]
+            proba = model.predict_proba(features_selected)[0]
+            
+            label_map = {
+                'Tomato___Bacterial_spot': ('bacterial_spot', 'Bacterial Spot Detected'),
+                'Tomato___healthy': ('healthy', 'Tomato Leaf is Healthy'),
+                0: ('bacterial_spot', 'Bacterial Spot Detected'),
+                1: ('healthy', 'Tomato Leaf is Healthy'),
+            }
+            
+            confidence = max(proba) * 100
+            result_type, result_label = label_map.get(prediction, ('unknown', f'Unknown Result: {prediction}'))
+            
+            st.subheader("Result:")
+            
+            # Display images side by side
+            col1, col2 = st.columns(2)
+            with col1:
+                st.image(img, caption="Analyzed Image", width=250)
+            with col2:
+                if result_type == 'healthy':
+                    st.success(f"{result_label}")
+                elif result_type == 'bacterial_spot':
+                    st.error(f"{result_label}")
+                else:
+                    st.warning(f"{result_label}")
+                
+                st.write(f"Confidence: **{confidence:.1f}%**")
+                st.progress(int(confidence))
+                
+        except Exception as e:
+            st.error(f"Error during analysis: {str(e)}")
+            st.code(traceback.format_exc())
