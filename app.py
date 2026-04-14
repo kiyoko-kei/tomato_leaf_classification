@@ -251,14 +251,25 @@ def extract_all_features(img_rgb):
 st.set_page_config(page_title="Tomato Leaf Classifier", page_icon="🍅", layout="centered")
 
 st.title("Tomato Leaf Disease Classifier")
-st.write("Upload a tomato leaf image to detect **Bacterial Spot** or **Healthy**.")
+st.write("Upload or capture a tomato leaf image to detect **Bacterial Spot** or **Healthy**.")
 
-uploaded = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
+tab_upload, tab_camera = st.tabs(["📁 Upload Image", "📷 Take Photo"])
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    st.image(img, caption="Uploaded Image", width=300)
+img = None
 
+with tab_upload:
+    uploaded = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
+    if uploaded:
+        img = Image.open(uploaded).convert("RGB")
+        st.image(img, caption="Uploaded Image", width=300)
+
+with tab_camera:
+    captured = st.camera_input("Point camera at a tomato leaf and take a photo")
+    if captured:
+        img = Image.open(captured).convert("RGB")
+        st.image(img, caption="Captured Image", width=300)
+
+if img is not None:
     img_np = np.array(img)
     img_np = cv2.resize(img_np, FIXED_SIZE)
 
@@ -270,17 +281,25 @@ if uploaded:
         proba             = model.predict_proba(features_selected)[0]
 
     label_map = {
-        'Tomato___Bacterial_spot': 'Bacterial Spot Detected',
-        'Tomato___healthy':        'Healthy Leaf'
+        # string labels
+        'Tomato___Bacterial_spot': ('bacterial_spot', 'Bacterial Spot Detected on Tomato Leaf'),
+        'Tomato___healthy':        ('healthy',        'Tomato Leaf is Healthy'),
+        # numeric labels (0 = bacterial spot, 1 = healthy)
+        0: ('bacterial_spot', 'Bacterial Spot Detected on Tomato Leaf'),
+        1: ('healthy',        'Tomato Leaf is Healthy'),
     }
 
     confidence = max(proba) * 100
 
+    result_type, result_label = label_map.get(prediction, ('unknown', f'Unknown Result: {prediction}'))
+
     st.subheader("Result:")
-    if prediction == 'Tomato___healthy':
-        st.success(label_map.get(prediction, prediction))
+    if result_type == 'healthy':
+        st.success(result_label)
+    elif result_type == 'bacterial_spot':
+        st.error(result_label)
     else:
-        st.error(label_map.get(prediction, prediction))
+        st.warning(result_label)
 
     st.write(f"Confidence: **{confidence:.1f}%**")
     st.progress(int(confidence))
