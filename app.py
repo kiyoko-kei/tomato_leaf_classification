@@ -7,7 +7,6 @@ from PIL import Image
 from skimage.feature import graycomatrix, graycoprops, local_binary_pattern, hog
 from skimage.measure import label, regionprops
 from scipy.stats import skew, kurtosis
-from sklearn.impute import SimpleImputer
 import traceback
 
 # Load model and processors with error handling
@@ -16,10 +15,23 @@ try:
     scaler = joblib.load('scaler.pkl')
     selector = joblib.load('selector.pkl')
     
-    # Debug info
+    # Debug info - handle SelectFromModel differently
     st.sidebar.success("✅ Models loaded successfully")
-    st.sidebar.write(f"Expected features after scaling: {scaler.n_features_in_}")
-    st.sidebar.write(f"Expected features after selection: {selector.n_features_in_}")
+    
+    # For scaler, we can get n_features_in_
+    if hasattr(scaler, 'n_features_in_'):
+        st.sidebar.write(f"Expected features after scaling: {scaler.n_features_in_}")
+    else:
+        st.sidebar.write(f"Scaler type: {type(scaler).__name__}")
+    
+    # For selector, we need to check the underlying estimator
+    if hasattr(selector, 'n_features_in_'):
+        st.sidebar.write(f"Expected features after selection: {selector.n_features_in_}")
+    elif hasattr(selector, 'estimator_'):
+        st.sidebar.write(f"Selector uses estimator with {selector.estimator_.n_features_in_} features")
+    else:
+        st.sidebar.write("Selector info: Will determine feature count during transform")
+        
 except Exception as e:
     st.error(f"Error loading model files: {str(e)}")
     st.error("Make sure rf_model.pkl, scaler.pkl, and selector.pkl are in the same directory as this app")
@@ -300,18 +312,19 @@ if img is not None:
             
             # Debug info
             st.sidebar.write(f"Features extracted: {len(features_df.columns)}")
-            st.sidebar.write(f"Expected features (scaler): {scaler.n_features_in_}")
             
-            # Check if feature count matches
-            if len(features_df.columns) != scaler.n_features_in_:
-                st.error(f"Feature dimension mismatch! Expected {scaler.n_features_in_} features but got {len(features_df.columns)}")
-                st.error("The model was trained with a different set of features. Please ensure all feature extraction functions match the training code.")
+            # Check if feature count matches scaler's expectation
+            expected_features = scaler.n_features_in_ if hasattr(scaler, 'n_features_in_') else None
+            
+            if expected_features and len(features_df.columns) != expected_features:
+                st.error(f"Feature dimension mismatch! Expected {expected_features} features but got {len(features_df.columns)}")
+                st.error("The model was trained with a different set of features.")
                 st.stop()
-
-            # Scale features
+            
+            # Apply scaling
             features_scaled = scaler.transform(features_df)
             
-            # Select features
+            # Apply feature selection
             features_selected = selector.transform(features_scaled)
             
             # Predict
@@ -323,6 +336,14 @@ if img is not None:
                 'Tomato___Bacterial_spot': ('bacterial_spot', 'Bacterial Spot Detected'),
                 'Tomato___healthy': ('healthy', 'Tomato Leaf is Healthy')
             }
+            
+            # Handle potential numeric predictions
+            if prediction not in label_map:
+                # Try to map by index if numeric
+                if prediction == 0:
+                    prediction = 'Tomato___Bacterial_spot'
+                elif prediction == 1:
+                    prediction = 'Tomato___healthy'
             
             confidence = max(proba) * 100
             result_type, result_label = label_map.get(prediction, ('unknown', f'Unknown Result: {prediction}'))
@@ -346,8 +367,10 @@ if img is not None:
                 
                 # Additional info
                 st.caption(f"Prediction: {prediction}")
-                st.caption(f"Probabilities: Bacterial Spot: {proba[0]:.3f}, Healthy: {proba[1]:.3f}")
+                if len(proba) >= 2:
+                    st.caption(f"Probabilities: Bacterial Spot: {proba[0]:.3f}, Healthy: {proba[1]:.3f}")
                 
         except Exception as e:
             st.error(f"Error during analysis: {str(e)}")
-            st.code(traceback.format_exc())
+            with st.expander("Show detailed error"):
+                st.code(traceback.format_exc())
